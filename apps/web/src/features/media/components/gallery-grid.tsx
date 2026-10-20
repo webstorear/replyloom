@@ -92,8 +92,8 @@ export function GalleryGrid({
           </EmptyMedia>
           <EmptyTitle>No media uploaded yet</EmptyTitle>
           <EmptyDescription>
-            Upload images, videos, audio, or documents to reuse across templates
-            and broadcasts.
+            Upload images, videos, audio, or documents up to 5 MiB each to reuse
+            across templates and broadcasts.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>

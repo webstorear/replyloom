@@ -20,7 +20,7 @@ Replyloom is two Cloudflare Workers that share one D1 database. Everything runs 
        ▼                      ▼                  └───────┬──────────────┬──────────────┬─────────────────┘
    ┌───────┐              ┌──────┐                       │              │              │
    │  D1   │◄─────────────┼──────┼───────────────────────┘              ▼              ▼
-   │SQLite │              │  R2  │◄──────────────────────────────── media        Vectorize / KV
+   │SQLite │              │ MEDIA_KV │◄────────────────────────────── media       Vectorize / KV
    └───────┘              └──────┘
 ```
 
@@ -31,6 +31,7 @@ Replyloom is two Cloudflare Workers that share one D1 database. Everything runs 
 | `apps/web` | The CRM. TanStack Start (SSR + server functions), React 19, TanStack Query, Better Auth, shadcn/ui. Code is split by feature in `src/features/*` (inbox, contacts, contact-lists, broadcasts, pipeline, templates, agent, integrations, …). |
 | `apps/worker` | The WhatsApp engine. HTTP router, `WhatsAppSession` and `Scheduler` Durable Objects, the broadcast queue consumer, the cron trigger, the AI agent, search and media. |
 | `packages/db` | The single source of truth for the schema (Drizzle) and SQL migrations (`packages/db/migrations`), used by both apps. |
+| `packages/media-storage` | Shared versioned KV media envelope, MIME validation and 5 MiB payload limit. |
 | `packages/ui` | Shared shadcn/ui components (`@workspace/ui/components/*`). |
 
 The two apps are **separate Workers on purpose**: you can deploy or roll back the engine without taking the CRM down, and the other way round. `apps/web` calls the engine over a **service binding** (`WA_WORKER`) authenticated with `ENGINE_INTERNAL_SECRET`. External integrations call the engine's public URL with a workspace **API key**.
@@ -41,10 +42,10 @@ The two apps are **separate Workers on purpose**: you can deploy or roll back th
 |---|---|
 | **D1** (`DB`) | Everything relational: users, orgs, sessions, contacts, conversations, messages, lists, campaigns, deals, templates, webhooks, API keys, `entity_counts`. |
 | **Durable Object SQLite** | Per-number Baileys auth state (`wa_creds`, `wa_keys`) and per-session counters (pace buckets, daily caps). |
-| **R2** (`MEDIA`) | Inbound/outbound media and the media library. |
+| **KV** (`MEDIA_KV`) | Inbound/outbound media, avatars and template library. Each value uses a versioned base64 envelope, capped at 5 MiB binary per object; KV is eventually consistent and not durable object storage. |
+| **KV** (`REPLY_CACHE`) | AI agent answer cache, config cache and per-conversation rate limits. Media never uses this namespace. |
 | **Queues** (`BROADCAST_QUEUE`) | Broadcast dispatch, one message per recipient batch, with delays. |
 | **Vectorize** | `wa-messages` (semantic message search) and `wa-docs` (AI agent knowledge), 1024-dim `@cf/baai/bge-m3`. |
-| **KV** (`REPLY_CACHE`) | AI agent answer cache, config cache and per-conversation rate limits. |
 
 ## Main flows
 
@@ -54,7 +55,7 @@ The UI creates a session and opens `/session/:id/connect` on the engine. The `Wh
 ### Inbound message
 `messages.upsert` in the DO → `session/message-events.ts`:
 1. Upserts the contact, conversation and message in D1 (`db/sync/*`, one `db.batch` per message, resolver cache).
-2. Downloads media to R2.
+2. Best-effort archives media to `MEDIA_KV` when it is at most 5 MiB; larger or failed archival leaves the message intact without a stored media key.
 3. Pushes the event to every connected browser over the DO's WebSocket.
 4. In the background: signed **webhooks** (`message.received`), **semantic indexing**, then a **keyword auto-reply**, or the **AI agent** if no rule matched. Replies pass through the loop breakers.
 

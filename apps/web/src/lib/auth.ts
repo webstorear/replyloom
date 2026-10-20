@@ -16,6 +16,7 @@ import { auth } from "./auth-server"
 import { UserFacingError, toSafeError } from "./errors"
 import { memoPerRequest } from "./request-cache"
 import { getMembershipCached, getSessionCached } from "./session-cache"
+import { consumeLocalRateLimit } from "./local-rate-limit"
 
 // Every new user gets a personal workspace ("organization" in Better
 // Auth's own terms — see packages/db/src/schema/auth.ts) on first
@@ -144,14 +145,12 @@ function toAuthUser(u: {
 
 /**
  * Brake on credential stuffing / sign-up spam. login/signup call
- * auth.api.* directly (not over HTTP), so Better Auth's own in-memory
- * limiter never runs for them -- this is the real gate. Keyed per IP and
- * per email so neither a botnet on one account nor one IP across many
- * accounts gets through. Fails open if the binding is missing/erroring.
+ * auth.api.* directly, so this gate is applied before Better Auth runs.
+ * Cloudflare's distributed binding is preferred when configured; the Free
+ * plan fallback is per-isolate and best-effort, not globally consistent.
  */
 async function enforceAuthRateLimit(email: string) {
   const limiter = (env as { AUTH_RATE_LIMITER?: RateLimit }).AUTH_RATE_LIMITER
-  if (!limiter) return
   let ip = "unknown"
   try {
     ip = getRequestHeaders().get("cf-connecting-ip") ?? "unknown"
@@ -160,11 +159,18 @@ async function enforceAuthRateLimit(email: string) {
   }
   const keys = [`ip:${ip}`, `email:${email.trim().toLowerCase()}`]
   for (const key of keys) {
-    try {
-      const { success } = await limiter.limit({ key })
-      if (!success) throw new UserFacingError("Too many attempts. Please wait a minute and try again.")
-    } catch (err) {
-      if (err instanceof UserFacingError) throw err
+    if (limiter) {
+      try {
+        const { success } = await limiter.limit({ key })
+        if (!success) throw new UserFacingError("Too many attempts. Please wait a minute and try again.")
+        continue
+      } catch (err) {
+        if (err instanceof UserFacingError) throw err
+        // Binding errors fall back to the bounded local limiter below.
+      }
+    }
+    if (!consumeLocalRateLimit(`auth:${key}`, 10, 60_000)) {
+      throw new UserFacingError("Too many attempts. Please wait a minute and try again.")
     }
   }
 }

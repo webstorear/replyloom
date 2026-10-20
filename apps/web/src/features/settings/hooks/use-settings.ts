@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start"
 import { getRequestHeaders } from "@tanstack/react-start/server"
 import { env } from "cloudflare:workers"
+import { storeMedia, deleteMedia } from "@workspace/media-storage"
 import {
   createDb,
   eq,
@@ -85,7 +86,7 @@ export const updateProfile = createServerFn({ method: "POST" })
   )
 
 // ── Profile photo upload (replaces the old "paste a URL" workflow) ──
-// The file arrives as base64, is validated and stored in R2 under a
+// The file arrives as base64, is validated and stored in KV under a
 // per-user avatars prefix, and the key is returned so the client can
 // resolve it to a public URL via waApi.mediaUrl before saving the profile.
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024
@@ -96,7 +97,7 @@ export const uploadProfileImage = createServerFn({ method: "POST" })
     if (!/^image\/(jpeg|png|webp|gif)$/i.test(data.mime))
       throw new Error("Please choose a JPG, PNG, WebP or GIF image.")
     if (!data.base64) throw new Error("No image data received.")
-    if (data.base64.length > MAX_AVATAR_BYTES * 1.4)
+    if (data.base64.length > 4 * Math.ceil(MAX_AVATAR_BYTES / 3))
       throw new Error("That image is too large (max 5 MB).")
     return data
   })
@@ -107,11 +108,9 @@ export const uploadProfileImage = createServerFn({ method: "POST" })
       const bytes = Uint8Array.from(atob(data.base64), (c) => c.charCodeAt(0))
       const ext = (data.mime.split("/")[1] ?? "png").split(";")[0]
       const mediaKey = `user-avatars/${sessionUser.id}/${crypto.randomUUID()}.${ext}`
-      await env.MEDIA.put(mediaKey, bytes, {
-        httpMetadata: { contentType: data.mime },
-      })
+      await storeMedia(env.MEDIA_KV, mediaKey, bytes, data.mime)
 
-      // Replacing a previous upload? Drop the old R2 object, but only if
+      // Replacing a previous upload? Drop the old KV object, but only if
       // it lives under our avatars prefix -- an external (Google, pasted
       // URL) avatar is someone else's object and stays untouched.
       const current = await db
@@ -125,7 +124,7 @@ export const uploadProfileImage = createServerFn({ method: "POST" })
           const prevKey = decodeURIComponent(
             new URL(prev).pathname.replace(/^\/media\//, "")
           )
-          if (prevKey.startsWith("user-avatars/")) await env.MEDIA.delete(prevKey)
+          if (prevKey.startsWith("user-avatars/")) await deleteMedia(env.MEDIA_KV, prevKey)
         } catch {
           // non-fatal -- unparseable/external URL left alone
         }
@@ -209,11 +208,14 @@ export const getAutoReplyRules = createServerFn()
     })
   )
 
+function manualOnlyModeEnabled(): boolean { return true }
+
 export const createAutoReplyRule = createServerFn({ method: "POST" })
   .validator(createAutoReplyRuleInput)
   .handler(
     withSafeErrors(async ({ data }) => {
       await requireCurrentPermission("manage_settings")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Automatic replies are disabled in manual-only mode.")
       if (data.matchType === "regex") {
         const problem = validateRulePattern(data.keyword)
         if (problem) throw new UserFacingError(problem)
@@ -244,6 +246,7 @@ export const updateAutoReplyRule = createServerFn({ method: "POST" })
       }
       const db = getDb()
       const workspaceId = await requireCurrentPermission("manage_settings")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Automatic replies are disabled in manual-only mode.")
       await db
         .update(autoReplyRules)
         .set({
@@ -264,6 +267,7 @@ export const toggleAutoReplyRule = createServerFn({ method: "POST" })
     withSafeErrors(async ({ data }) => {
       const db = getDb()
       const workspaceId = await requireCurrentPermission("manage_settings")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Automatic replies are disabled in manual-only mode.")
       await db
         .update(autoReplyRules)
         .set({ enabled: data.enabled })
@@ -278,6 +282,7 @@ export const deleteAutoReplyRule = createServerFn({ method: "POST" })
     withSafeErrors(async ({ data }) => {
       const db = getDb()
       const workspaceId = await requireCurrentPermission("manage_settings")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Automatic replies are disabled in manual-only mode.")
       await db.delete(autoReplyRules).where(and(eq(autoReplyRules.id, data.id), eq(autoReplyRules.workspaceId, workspaceId)))
       return { ok: true }
     }, "Couldn't delete the rule. Please try again.")

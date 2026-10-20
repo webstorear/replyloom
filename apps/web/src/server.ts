@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 import { scrubSentryEvent } from "@workspace/db/sentry-scrub";
+import { consumeLocalRateLimit } from "./lib/local-rate-limit";
 
 type AppEnv = Env & {
   WEB_RATE_LIMITER?: RateLimit;
@@ -53,13 +54,15 @@ function tooMany(retryAfter = 60) {
   });
 }
 
-async function limited(limiter: RateLimit | undefined, key: string): Promise<boolean> {
-  if (!limiter) return false; // binding missing (tests / misconfig) -> fail open
+async function limited(limiter: RateLimit | undefined, key: string, limit: number): Promise<boolean> {
+  if (!limiter) return !consumeLocalRateLimit(key, limit, 60_000);
   try {
     const { success } = await limiter.limit({ key });
     return !success;
   } catch {
-    return false; // never let the limiter itself cause an outage
+    // Keep requests available during binding errors; local fallback remains
+    // a best-effort abuse brake, not a distributed security boundary.
+    return !consumeLocalRateLimit(key, limit, 60_000);
   }
 }
 
@@ -69,10 +72,10 @@ const app = {
     const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
 
     if (request.method === "POST" && AUTH_SENSITIVE.test(url.pathname)) {
-      if (await limited(env.AUTH_RATE_LIMITER, `auth:${ip}`)) return tooMany();
+      if (await limited(env.AUTH_RATE_LIMITER, `auth:${ip}`, 10)) return tooMany();
     }
     if (url.pathname.startsWith("/_serverFn") || url.pathname.startsWith("/api/")) {
-      if (await limited(env.WEB_RATE_LIMITER, `web:${ip}`)) return tooMany();
+      if (await limited(env.WEB_RATE_LIMITER, `web:${ip}`, 600)) return tooMany();
     }
 
     // @ts-expect-error - handler is not typed as a Cloudflare handler

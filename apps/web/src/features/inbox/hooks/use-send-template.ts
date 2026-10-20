@@ -5,7 +5,7 @@ import { bumpTemplateUsage } from "@/features/templates/hooks/use-templates"
 /**
  * Sends a (already variable-resolved) template as a normal message —
  * same shape as useSendMedia, just routed through /send-template so a
- * template's attachment can be reused straight from R2 without a
+ * template's attachment can be reused straight from KV without a
  * re-upload. Used for a media template picked in the composer; a
  * text-only template is just inserted into the draft instead (see
  * message-composer.tsx) so it can still be edited before sending.

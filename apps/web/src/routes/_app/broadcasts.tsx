@@ -3,7 +3,7 @@
 // round trip -- keep the `err?.message ?? fallback` defensive
 // reads below rather than trust the annotation blindly.
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import { createFileRoute, useRouteContext } from "@tanstack/react-router"
+import { createFileRoute, redirect, useRouteContext } from "@tanstack/react-router"
 import { useState } from "react"
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { LoadMoreButton } from "@/components/load-more-button"
@@ -34,6 +34,7 @@ import { shownOf, totalOf } from "@/lib/format-count"
 
 export const Route = createFileRoute("/_app/broadcasts")({
   staticData: { title: "Broadcasts" },
+  beforeLoad: () => { throw redirect({ to: "/inbox" }) },
   component: BroadcastsPage,
 })
 

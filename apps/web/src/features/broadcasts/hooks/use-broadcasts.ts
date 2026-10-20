@@ -147,11 +147,14 @@ export const getCampaigns = createServerFn()
     })
   )
 
+function manualOnlyModeEnabled(): boolean { return true }
+
 export const createCampaign = createServerFn({ method: "POST" })
   .validator(createCampaignInput)
   .handler(
     withSafeErrors(async ({ data }) => {
       await requireCurrentPermission("manage_broadcasts")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Broadcasts are disabled in manual-only mode.")
       await requireWorkspaceAccess(data.workspaceId)
       const db = getDb()
       await requireSession(db, data.workspaceId, data.waSessionId)
@@ -377,6 +380,7 @@ export const createScheduledMessage = createServerFn({ method: "POST" })
   .handler(
     withSafeErrors(async ({ data }) => {
       await requirePermission(data.workspaceId, "send_messages")
+      if (manualOnlyModeEnabled()) throw new UserFacingError("Scheduled messages are disabled in manual-only mode.")
       await requireWorkspaceAccess(data.workspaceId)
       const db = getDb()
       await requireSession(db, data.workspaceId, data.waSessionId)

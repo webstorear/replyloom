@@ -18,7 +18,8 @@
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "@workspace/db": "workspace:*",
     "pino": "^9.6.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@workspace/media-storage": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260916.1",

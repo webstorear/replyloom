@@ -4,6 +4,7 @@ import { UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { fileToBase64 } from "@/lib/file-utils"
 import { serverUploadMedia } from "@/lib/wa-server"
+import { MAX_MEDIA_BYTES } from "@workspace/media-storage"
 
 export function UploadAssetButton({
   onUploaded,
@@ -23,6 +24,10 @@ export function UploadAssetButton({
     const file = e.target.files?.[0]
     e.target.value = ""
     if (!file) return
+    if (file.size > MAX_MEDIA_BYTES) {
+      toast.error("Media library files must be 5 MiB or smaller.")
+      return
+    }
     setUploading(true)
     try {
       const res = await serverUploadMedia({

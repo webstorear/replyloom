@@ -20,7 +20,7 @@ export const templates = sqliteTable(
     // schema), so most templates don't need one.
     shortcut: text("shortcut"),
     body: text("body"),
-    mediaKey: text("media_key"), // R2 object key -- shared by every message sent from this template
+    mediaKey: text("media_key"), // KV media key -- shared by every message sent from this template
     mediaMime: text("media_mime"),
     mediaType: text("media_type", { enum: ["image", "video", "audio", "document"] }),
     usageCount: integer("usage_count").notNull().default(0),

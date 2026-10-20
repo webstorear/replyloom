@@ -25,6 +25,7 @@ import {
 import { toast } from "sonner"
 import { fileToBase64 } from "@/lib/file-utils"
 import { serverUploadMedia } from "@/lib/wa-server"
+import { MAX_MEDIA_BYTES } from "@workspace/media-storage"
 import { waApi } from "@/lib/wa-api"
 import { extractTemplateVariables } from "@workspace/db"
 import { createMediaAsset } from "@/features/media/hooks/use-media-assets"
@@ -187,6 +188,10 @@ export function CreateTemplateDialog({
     const file = e.target.files?.[0]
     e.target.value = ""
     if (!file) return
+    if (file.size > MAX_MEDIA_BYTES) {
+      toast.error("Media library files must be 5 MiB or smaller.")
+      return
+    }
     setUploading(true)
     try {
       const res = await serverUploadMedia({
@@ -389,6 +394,7 @@ export function CreateTemplateDialog({
 
           <div className="flex flex-col gap-2">
             <Label>Attachment</Label>
+            <p className="text-xs text-muted-foreground">Media library uploads are limited to 5 MiB per file.</p>
             <input
               ref={fileInputRef}
               type="file"

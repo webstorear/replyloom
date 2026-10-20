@@ -39,6 +39,7 @@
 import { createDb, eq, apiKeys } from "@workspace/db";
 import type { Env } from "./index";
 import { TtlCache } from "./ttl-cache";
+import { MAX_MEDIA_BYTES } from "@workspace/media-storage";
 
 const API_KEY_TTL_MS = 60_000;
 const LAST_USED_WRITE_MS = 10 * 60_000;
@@ -138,8 +139,8 @@ export function assertCallerWorkspace(caller: Caller, workspaceId: string): Resp
 }
 
 // ── Media size caps ─────────────────────────────────────────────────────────
-/** Max bytes accepted for library-media uploads (POST /media/upload). 16 MB. */
-export const MAX_MEDIA_UPLOAD_BYTES = 16 * 1024 * 1024;
+/** Max bytes accepted for library-media uploads (POST /media/upload): 5 MiB KV cap. */
+export const MAX_MEDIA_UPLOAD_BYTES = MAX_MEDIA_BYTES;
 /** Max bytes accepted for per-message media sends (POST /session/:id/send-media). 64 MB. */
 export const MAX_SEND_MEDIA_BYTES = 64 * 1024 * 1024;
 // SSRF guard -- shared with the web app, see packages/db lib/safe-url.ts

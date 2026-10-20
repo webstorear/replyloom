@@ -57,7 +57,7 @@ export interface BroadcastQueueMessage {
   // Already variable-resolved against this specific recipient (see
   // startCampaign) -- the queue carries the final text, not the template.
   text: string;
-  // Points at an R2 object uploaded once for the campaign (from a
+  // Points at a KV media object uploaded once for the campaign (from a
   // template's attachment) -- every recipient's send reuses the same key.
   mediaKey?: string;
   // Carried in the message so the consumer doesn't re-read it per send.
@@ -101,7 +101,7 @@ async function sendViaSession(
   const id = env.WHATSAPP_SESSION.idFromName(waSessionId);
   const stub = env.WHATSAPP_SESSION.get(id);
   // /send-template handles both plain text and (when mediaKey is set) an
-  // attachment pulled from R2 -- one endpoint covers both broadcast shapes.
+  // attachment pulled from KV -- one endpoint covers both broadcast shapes.
   const res = await stub.fetch("http://do/send-template", {
     method: "POST",
     // Tells the session's outbound guard which limits apply (see

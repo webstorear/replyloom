@@ -75,7 +75,7 @@ function AccountPage() {
       toast.error(err?.message ?? "Couldn't update your profile."),
   })
 
-  // Reads the picked image to base64, stores it in R2 via the server, and
+  // Reads the picked image to base64, stores it in KV via the server, and
   // resolves the new object key to a public media URL for the profile form.
   async function uploadImage(file: File) {
     const base64 = await new Promise<string>((resolve, reject) => {

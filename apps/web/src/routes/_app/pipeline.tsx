@@ -1,8 +1,9 @@
-import { createFileRoute, useRouteContext } from "@tanstack/react-router"
+import { createFileRoute, redirect, useRouteContext } from "@tanstack/react-router"
 import { PipelineBoard } from "@/features/pipeline/components/pipeline-board"
 
 export const Route = createFileRoute("/_app/pipeline")({
   staticData: { title: "Pipeline" },
+  beforeLoad: () => { throw redirect({ to: "/inbox" }) },
   component: PipelinePage,
 })
 

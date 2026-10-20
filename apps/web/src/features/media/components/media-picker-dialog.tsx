@@ -14,6 +14,7 @@ import { UploadIcon, LoaderCircleIcon, CheckIcon } from "lucide-react"
 import { toast } from "sonner"
 import { fileToBase64 } from "@/lib/file-utils"
 import { serverUploadMedia } from "@/lib/wa-server"
+import { MAX_MEDIA_BYTES } from "@workspace/media-storage"
 import {
   getMediaAssetsPage,
   createMediaAsset,
@@ -78,6 +79,10 @@ export function MediaPickerDialog({
     const file = e.target.files?.[0]
     e.target.value = ""
     if (!file) return
+    if (file.size > MAX_MEDIA_BYTES) {
+      toast.error("Media library files must be 5 MiB or smaller.")
+      return
+    }
     setUploading(true)
     try {
       const res = await serverUploadMedia({
@@ -140,7 +145,7 @@ export function MediaPickerDialog({
         <SheetHeader className="border-b p-5 pe-14 text-start">
           <SheetTitle>Pick from gallery</SheetTitle>
           <SheetDescription>
-            Choose an image, video, audio clip, or document to attach.
+            Choose an image, video, audio clip, or document up to 5 MiB to attach.
           </SheetDescription>
         </SheetHeader>
 

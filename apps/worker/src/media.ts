@@ -1,10 +1,9 @@
-// Downloads WhatsApp media (images, videos, voice notes, documents,
-// stickers) via Baileys and stores it in R2 -- D1 only ever holds the
-// object key + mime + lightweight metadata (see MediaMeta in
-// @workspace/db), never the bytes themselves.
-import { downloadMediaMessage  } from "@whiskeysockets/baileys";
-import type {WASocket} from "@whiskeysockets/baileys";
+// Downloads WhatsApp media via Baileys and stores bounded copies in the
+// dedicated MEDIA_KV namespace. D1 holds keys and lightweight metadata only.
+import { downloadMediaMessage } from "@whiskeysockets/baileys";
+import type { WASocket } from "@whiskeysockets/baileys";
 import type { MediaMeta } from "@workspace/db";
+import { storeMedia } from "@workspace/media-storage";
 import type { Env } from "./index";
 import type { IncomingType } from "./db/sync";
 import { scopedLogger } from "./logger";
@@ -27,7 +26,6 @@ const MIME_EXT: Record<string, string | undefined> = {
 
 function extFor(mime: string | undefined, fallback: string): string {
   if (!mime) return fallback;
-  // split() can return fewer parts than TS's non-null index type implies.
   const subtype = mime.split("/")[1] as string | undefined;
   return MIME_EXT[mime] ?? subtype?.split(";")[0] ?? fallback;
 }
@@ -61,10 +59,8 @@ function extractMediaMeta(content: any, type: IncomingType): MediaMeta {
 }
 
 /**
- * Downloads and stores one media message. Best-effort: WhatsApp media
- * expires from its CDN and re-uploads can still fail (e.g. the sender went
- * offline), so a failure here just means the message is saved without
- * media rather than the whole sync failing.
+ * Best-effort archival: WhatsApp CDN media can expire and KV can be
+ * unavailable. A persistence failure must not fail message synchronization.
  */
 export async function downloadAndStoreMedia(
   sock: WASocket,
@@ -80,27 +76,23 @@ export async function downloadAndStoreMedia(
   if (!content) return null;
 
   try {
-    const buffer = (await downloadMediaMessage(
+    const buffer = await downloadMediaMessage(
       msg,
       "buffer",
       {},
       { logger: console as any, reuploadRequest: sock.updateMediaMessage },
-    ));
-
-    const CONTENT_KEY: Record<string, string> = {
+    );
+    const contentKey: Record<string, string> = {
       image: "imageMessage",
       video: "videoMessage",
       audio: "audioMessage",
       document: "documentMessage",
       sticker: "stickerMessage",
     };
-    const typedMessage = content[CONTENT_KEY[type]];
+    const typedMessage = content[contentKey[type]];
     const mime: string = typedMessage?.mimetype ?? "application/octet-stream";
-    const ext = extFor(mime, type);
-    const mediaKey = `${workspaceId}/${waSessionId}/${waMessageId}.${ext}`;
-
-    await env.MEDIA.put(mediaKey, buffer, { httpMetadata: { contentType: mime } });
-
+    const mediaKey = `${workspaceId}/${waSessionId}/${waMessageId}.${extFor(mime, type)}`;
+    await storeMedia(env.MEDIA_KV, mediaKey, buffer, mime);
     return { mediaKey, mediaMime: mime, mediaMeta: extractMediaMeta(content, type) };
   } catch (err: any) {
     log.error({ err, waMessageId, type }, "downloadAndStoreMedia failed");
@@ -108,14 +100,7 @@ export async function downloadAndStoreMedia(
   }
 }
 
-/**
- * Stores media WE are sending (an attachment picked in the composer) into
- * R2 under the same key scheme as incoming media, using the bytes we
- * already have in hand rather than re-downloading from WhatsApp's CDN
- * (there's nothing to re-download -- we're the sender). Used right after
- * a successful sendMessage() so the outbound bubble renders the same way
- * an inbound one would.
- */
+/** Store an outbound attachment after sendMessage succeeds. */
 export async function storeOutgoingMedia(
   env: Env,
   workspaceId: string,
@@ -126,21 +111,18 @@ export async function storeOutgoingMedia(
   type: Exclude<IncomingType, "text">,
   fileName?: string,
 ): Promise<{ mediaKey: string; mediaMime: string; mediaMeta: MediaMeta }> {
-  const ext = extFor(mime, type);
-  const mediaKey = `${workspaceId}/${waSessionId}/${waMessageId}.${ext}`;
-  await env.MEDIA.put(mediaKey, buffer, { httpMetadata: { contentType: mime } });
-
+  const mediaKey = `${workspaceId}/${waSessionId}/${waMessageId}.${extFor(mime, type)}`;
+  await storeMedia(env.MEDIA_KV, mediaKey, buffer, mime);
   const mediaMeta: MediaMeta =
     type === "document"
       ? { fileName, fileSizeBytes: buffer.byteLength }
       : type === "audio"
         ? { ptt: false }
         : {};
-
   return { mediaKey, mediaMime: mime, mediaMeta };
 }
 
-/** image/video/audio/document from a mime type -- same bucket Baileys' own content shape needs. */
+/** Map MIME to the Baileys content type used by template sends. */
 export function mediaTypeFromMime(mime: string): "image" | "video" | "audio" | "document" {
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
@@ -148,14 +130,7 @@ export function mediaTypeFromMime(mime: string): "image" | "video" | "audio" | "
   return "document";
 }
 
-/**
- * Stores a standalone media asset (a template's attachment, uploaded from
- * the templates settings UI before any message references it) under its
- * own key, not tied to any one WhatsApp message. Every message later sent
- * from that template points at this same R2 object -- see
- * `/send-template` in whatsapp-session.ts -- rather than each send
- * re-uploading or copying the bytes.
- */
+/** Store a template attachment in the workspace-scoped media library. */
 export async function storeLibraryMedia(
   env: Env,
   workspaceId: string,
@@ -163,8 +138,7 @@ export async function storeLibraryMedia(
   mime: string,
 ): Promise<{ mediaKey: string; mediaMime: string; mediaType: "image" | "video" | "audio" | "document" }> {
   const type = mediaTypeFromMime(mime);
-  const ext = extFor(mime, type);
-  const mediaKey = `${workspaceId}/templates/${crypto.randomUUID()}.${ext}`;
-  await env.MEDIA.put(mediaKey, buffer, { httpMetadata: { contentType: mime } });
+  const mediaKey = `${workspaceId}/templates/${crypto.randomUUID()}.${extFor(mime, type)}`;
+  await storeMedia(env.MEDIA_KV, mediaKey, buffer, mime);
   return { mediaKey, mediaMime: mime, mediaType: type };
 }

@@ -105,9 +105,9 @@ export default class WorkersWebSocket {
           data = evt.data;
         }
         if (data instanceof Uint8Array) {
-          console.debug(`[ws-shim] RECV ${data.length} bytes: first8=[${Array.from(data.slice(0, 8))}]`);
+          console.debug(`[ws-shim] RECV ${data.length} bytes`);
         } else {
-          console.debug(`[ws-shim] RECV string: ${String(data).slice(0, 100)}`);
+          console.debug(`[ws-shim] RECV text frame (${String(data).length} chars)`);
         }
         this.fire('message', data);
       });
@@ -211,7 +211,7 @@ export default class WorkersWebSocket {
   private doSend(data: string | Uint8Array, cb?: (err?: Error) => void) {
     try {
       const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
-      console.debug(`[ws-shim] SEND ${bytes.length} bytes: first8=[${Array.from(bytes.slice(0, 8))}]`);
+      console.debug(`[ws-shim] SEND ${bytes.length} bytes`);
       this.nativeSocket!.send(data);
       cb?.();
     } catch (err) {

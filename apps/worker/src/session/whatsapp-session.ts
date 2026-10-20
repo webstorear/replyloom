@@ -4,6 +4,8 @@ import type { AuthenticationState, AuthenticationCreds, SignalKeyStore, WASocket
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { createDb,  and, eq, sql, messages, conversations, contacts, waSessions } from "@workspace/db";
 import type {Db} from "@workspace/db";
+import { isWorkspaceMediaKey, readMedia } from "@workspace/media-storage";
+import { MAX_SEND_MEDIA_BYTES } from "../security";
 import type { Env } from "../index";
 import { publicMessage, publicStatus } from "../errors";
 import { readJson } from "../json";
@@ -994,7 +996,7 @@ export class WhatsAppSession implements DurableObject {
     // Attachments (image/video/audio/document) picked in the composer.
     // multipart/form-data because these can be several MB -- base64-in-JSON
     // would blow up ~33% larger for no reason. Mirrors /send: sends via
-    // Baileys first, then best-effort stores our own copy in R2 + D1 so the
+    // Baileys first, then best-effort stores our own copy in KV + D1 so the
     // outbound bubble shows up immediately without waiting on a
     // messages.upsert echo (which WhatsApp doesn't even reliably send back
     // for our own outgoing messages).
@@ -1039,6 +1041,9 @@ export class WhatsAppSession implements DurableObject {
       if (!(file instanceof File)) {
         return Response.json({ ok: false, error: "Missing 'file'" }, { status: 400 });
       }
+      if (file.size > MAX_SEND_MEDIA_BYTES) {
+        return Response.json({ ok: false, error: "File too large — max 64 MB" }, { status: 413 });
+      }
 
       const mediaType = type as "image" | "video" | "audio" | "document";
       const captionText = typeof caption === "string" && caption.trim() ? caption.trim() : undefined;
@@ -1079,8 +1084,9 @@ export class WhatsAppSession implements DurableObject {
         const workspaceId = await this.resolveWorkspaceId();
         if (workspaceId && result?.key) {
           const waMessageId = result.key.id ?? crypto.randomUUID();
+          let stored: Awaited<ReturnType<typeof storeOutgoingMedia>> | null = null;
           try {
-            const stored = await storeOutgoingMedia(
+            stored = await storeOutgoingMedia(
               this.env,
               workspaceId,
               this.sessionIdName,
@@ -1090,19 +1096,25 @@ export class WhatsAppSession implements DurableObject {
               mediaType,
               file.name || undefined
             );
+          } catch (storageErr: any) {
+            // WhatsApp already accepted the send. Oversize or failed optional
+            // archival must not turn a successful send into a false negative.
+            this.log("warn", `Media archival skipped after successful send: ${storageErr?.message || storageErr}`);
+          }
+          try {
             await syncIncomingMessage(this.db, workspaceId, this.sessionIdName, {
               waMessageId,
               remoteJid: jid,
               fromMe: true,
               type: mediaType,
               body: captionText,
-              mediaKey: stored.mediaKey,
-              mediaMime: stored.mediaMime,
-              mediaMeta: stored.mediaMeta,
+              mediaKey: stored?.mediaKey,
+              mediaMime: stored?.mediaMime,
+              mediaMeta: stored?.mediaMeta,
               timestampMs: Date.now(),
             });
           } catch (syncErr: any) {
-            this.log("error", `D1/R2 sync failed for sent media: ${syncErr?.message || syncErr}`);
+            this.log("error", `D1 sync failed for sent media: ${syncErr?.message || syncErr}`);
           }
         }
 
@@ -1118,10 +1130,10 @@ export class WhatsAppSession implements DurableObject {
     // button, or by a broadcast campaign) as a normal outbound message.
     // `text` here is already variable-resolved by the caller -- this
     // route only knows how to send, not how to fill in {{placeholders}}.
-    // `mediaKey` (optional) points at an R2 object already uploaded via
+    // `mediaKey` (optional) points at a KV object already uploaded via
     // POST /media/upload -- reused as-is rather than copied per send,
     // since the bytes are immutable either way (mirrors /send-media, but
-    // pulls the file from R2 instead of the request body).
+    // pulls the file from KV instead of the request body).
     if (request.method === "POST" && url.pathname === "/send-template") {
       await this.ensureInit();
       if (!this.socket) {
@@ -1147,6 +1159,10 @@ export class WhatsAppSession implements DurableObject {
       }
 
       try {
+        const workspaceId = await this.resolveWorkspaceId();
+        if (body.mediaKey && (!workspaceId || !isWorkspaceMediaKey(workspaceId, body.mediaKey))) {
+          return Response.json({ ok: false, error: "Media key is outside this workspace" }, { status: 403 });
+        }
         let jid = body.to.includes("@") ? body.to : `${body.to}@s.whatsapp.net`;
         jid = await resolveToPhoneJid(this.db, this.sessionIdName, jid);
         if (isLidJid(jid)) {
@@ -1158,12 +1174,12 @@ export class WhatsAppSession implements DurableObject {
         let content: any;
 
         if (body.mediaKey) {
-          const object = await this.env.MEDIA.get(body.mediaKey);
-          if (!object) {
+          const storedMedia = await readMedia(this.env.MEDIA_KV, body.mediaKey);
+          if (!storedMedia) {
             return Response.json({ ok: false, error: "Template media not found in storage" }, { status: 404 });
           }
-          const buffer = Buffer.from(await object.arrayBuffer());
-          mediaMime = object.httpMetadata?.contentType || "application/octet-stream";
+          const buffer = Buffer.from(storedMedia.bytes);
+          mediaMime = storedMedia.mime;
           mediaType = mediaTypeFromMime(mediaMime);
           const captionText = body.text?.trim() || undefined;
           if (mediaType === "image")
@@ -1194,7 +1210,6 @@ export class WhatsAppSession implements DurableObject {
         if (outboundBlocked) return outboundBlocked;
         const result = await this.socket.sendMessage(jid, content);
 
-        const workspaceId = await this.resolveWorkspaceId();
         if (workspaceId && result?.key) {
           try {
             await syncIncomingMessage(this.db, workspaceId, this.sessionIdName, {
@@ -2311,16 +2326,19 @@ export class WhatsAppSession implements DurableObject {
       // recorded on the companion device when they asked for history.
       const wantHistory = !this.skipHistorySync;
       const hasPaired = !!authState.creds.me;
-      const useDesktopProfile = wantHistory && hasPaired;
       this.log(
         "info",
-        `socket profile: hasPaired=${hasPaired} wantHistory=${wantHistory} useDesktopProfile=${useDesktopProfile}`
+        `socket profile: hasPaired=${hasPaired} wantHistory=${wantHistory} browser=Chrome`
       );
       this.socket = makeWASocket({
         auth: authState,
         version: waVersion,
         printQRInTerminal: false,
-        browser: useDesktopProfile ? Browsers.macOS("Desktop") : Browsers.macOS("Chrome"),
+        // Keep the same Chrome web profile for both initial pairing and subsequent logins.
+        // WhatsApp was closing the post-pairing login socket (close 1011) when the
+        // session switched to the Desktop/DARWIN profile immediately after QR auth.
+        // Chrome is the profile used during pairing and avoids that profile transition.
+        browser: Browsers.macOS("Chrome"),
         syncFullHistory: wantHistory,
         // Default Baileys filter rejects FULL history; when the user asked
         // to import history, accept every sync type including FULL. Must not
@@ -2332,13 +2350,15 @@ export class WhatsAppSession implements DurableObject {
           level: "warn",
           child: () => ({
             level: "warn",
-            trace: (...a: any[]) => this.log("info", `[trace] ${a.map(fmtLogArg).join(" ")}`),
+            // Baileys trace payloads can contain cryptographic handshake material; do not persist them.
+            trace: () => {},
             debug: (...a: any[]) => this.log("info", `[debug] ${a.map(fmtLogArg).join(" ")}`),
             info: (...a: any[]) => this.log("info", `[info] ${a.map(fmtLogArg).join(" ")}`),
             warn: (...a: any[]) => this.log("warn", `[warn] ${a.map(fmtLogArg).join(" ")}`),
             error: (...a: any[]) => this.log("error", `[err] ${a.map(fmtLogArg).join(" ")}`),
           }),
-          trace: (...a: any[]) => this.log("info", `[trace] ${a.map(fmtLogArg).join(" ")}`),
+          // Do not log raw Baileys handshake trace payloads.
+          trace: () => {},
           debug: (...a: any[]) => this.log("info", `[debug] ${a.map(fmtLogArg).join(" ")}`),
           info: (...a: any[]) => this.log("info", `[info] ${a.map(fmtLogArg).join(" ")}`),
           warn: (...a: any[]) => this.log("warn", `[warn] ${a.map(fmtLogArg).join(" ")}`),
@@ -3017,8 +3037,6 @@ export class WhatsAppSession implements DurableObject {
                 workspaceId,
                 log: this.log.bind(this),
                 broadcast: this.broadcast.bind(this),
-                allowAutoReply: this.allowAutoReply.bind(this),
-                waitUntil: (p) => this.state.waitUntil(p),
               },
               msg,
               upsertType

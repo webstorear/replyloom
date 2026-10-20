@@ -14,11 +14,11 @@ WEB_DIR="apps/web"
 WORKER_CONFIG="$WORKER_DIR/wrangler.jsonc"
 WEB_CONFIG="$WEB_DIR/wrangler.jsonc"
 DB_NAME="whatsapp-ai"
-MEDIA_BUCKET="whatsapp-ai-media"
 QUEUE_NAME="wa-broadcast-dispatch"
 VECTORIZE_INDEX="wa-messages"
 AGENT_VECTORIZE_INDEX="wa-docs"
 KV_BINDING="REPLY_CACHE"
+MEDIA_KV_BINDING="MEDIA_KV"
 
 # Create wrangler.jsonc / .env.production from the templates if missing.
 node scripts/config.mjs
@@ -76,13 +76,7 @@ else
   echo "    already configured, id=$DB_ID"
 fi
 
-# ── R2 bucket (media) ────────────────────────────────────────────────────
-echo "==> R2 bucket ($MEDIA_BUCKET)..."
-if wrangler r2 bucket list 2>/dev/null | grep -q "$MEDIA_BUCKET"; then
-  echo "    already exists"
-else
-  wrangler r2 bucket create "$MEDIA_BUCKET"
-fi
+# Media storage uses the dedicated MEDIA_KV namespace configured below; no R2 bucket is created.
 
 # ── Queue (safe-broadcast dispatch) ──────────────────────────────────────
 echo "==> Queue ($QUEUE_NAME)..."
@@ -136,6 +130,24 @@ if [ "$CURRENT_KV_ID" = "REPLACE_WITH_KV_NAMESPACE_ID" ] || [ -z "$CURRENT_KV_ID
   fi
 else
   echo "    already configured, id=$CURRENT_KV_ID"
+fi
+
+# ── Dedicated media KV namespace (shared by web + worker) ────────────────
+echo "==> KV namespace ($MEDIA_KV_BINDING)..."
+CURRENT_MEDIA_KV_ID=$(grep '"binding": "MEDIA_KV"' "$WORKER_CONFIG" | grep -o '"id": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+if [ "$CURRENT_MEDIA_KV_ID" = "REPLACE_WITH_MEDIA_KV_NAMESPACE_ID" ] || [ -z "$CURRENT_MEDIA_KV_ID" ]; then
+  if ! wrangler kv namespace list --json 2>/dev/null | grep -q "$MEDIA_KV_BINDING"; then
+    wrangler kv namespace create "$MEDIA_KV_BINDING" >/dev/null
+  fi
+  MEDIA_KV_ID=$(wrangler kv namespace list --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const n=JSON.parse(s).find(x=>x.title==='$MEDIA_KV_BINDING');if(n)console.log(n.id)}catch{}})")
+  if [ -n "${MEDIA_KV_ID:-}" ]; then
+    node -e "const fs=require('fs');for(const p of ['$WORKER_CONFIG','$WEB_CONFIG']){let s=fs.readFileSync(p,'utf8');s=s.replace(/(\"binding\": \"MEDIA_KV\", \"id\": )\"[^\"]*\"/, '\$1\"$MEDIA_KV_ID\"');fs.writeFileSync(p,s)}"
+    echo "    wrote shared MEDIA_KV id into both configs"
+  else
+    echo "    WARNING: could not resolve MEDIA_KV id; set it manually in both configs" >&2
+  fi
+else
+  echo "    already configured, id=$CURRENT_MEDIA_KV_ID"
 fi
 
 # ── Run D1 migrations (remote) ───────────────────────────────────────────

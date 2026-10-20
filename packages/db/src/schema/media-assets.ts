@@ -6,7 +6,7 @@ import { workspaces } from "./tenancy";
 // and reusable across templates/broadcasts without re-uploading. A
 // template's own mediaKey/mediaMime/mediaType (see ./templates.ts) is
 // still what a message send actually reads; this table exists purely so
-// the workspace has a browsable, named catalog of what's already in R2
+// the workspace has a browsable, named catalog of what's already in KV
 // instead of every upload being an opaque, template-only key.
 export const mediaAssets = sqliteTable(
   "media_assets",

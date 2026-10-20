@@ -1,8 +1,9 @@
 import { createServerFn } from "@tanstack/react-start"
 import { env } from "cloudflare:workers"
+import { MAX_MEDIA_BYTES, isWorkspaceMediaKey, readMedia } from "@workspace/media-storage"
 import { applySafeMediaHeaders } from "@workspace/db"
 import { getCurrentUser, requireCurrentPermission } from "./auth"
-import { callEngine, readEngineJson } from "./wa-engine"
+import { readEngineJson } from "./wa-engine"
 
 type SendResult = { ok: boolean }
 
@@ -128,6 +129,9 @@ export const serverUploadMedia = createServerFn({ method: "POST" })
     (data: { fileBase64: string; fileName: string; fileMime: string }) => data
   )
   .handler(async ({ data }) => {
+    if (data.fileBase64.length > 4 * Math.ceil(MAX_MEDIA_BYTES / 3)) {
+      throw new Error("Media library files must be 5 MiB or smaller.")
+    }
     const workspaceId = await requireWorkspace("send_messages")
     const bytes = Uint8Array.from(atob(data.fileBase64), (char) =>
       char.charCodeAt(0)
@@ -603,33 +607,16 @@ export async function proxyWorkspaceMedia(request: Request): Promise<Response> {
   const workspaceId = await requireWorkspace()
   const key = new URL(request.url).searchParams.get("key")
   if (!key) return new Response("Missing media key", { status: 400 })
-  // Same ownership rule as the engine: keys embed the workspace id as the
-  // first segment. Read R2 directly (this Worker has the MEDIA binding) --
-  // was web -> engine -> R2, two Worker hops per image.
-  if (!key.startsWith(`${workspaceId}/`) || key.includes("..")) {
+  // Both Workers use the same dedicated KV namespace. KV does not support
+  // R2's conditional-read API, so immutable media is served without 304 logic.
+  if (!isWorkspaceMediaKey(workspaceId, key)) {
     return new Response("Forbidden", { status: 403 })
   }
 
-  const etag = request.headers.get("If-None-Match")
-  const object = await env.MEDIA.get(key, etag ? { onlyIf: { etagDoesNotMatch: etag.replace(/"/g, "") } } : undefined)
-  if (!object) {
-    // Fallback via the engine: in local dev the web and engine Workers keep
-    // separate local R2 state, so an object the engine stored isn't here.
-    const response = await callEngine(`/media/${encodeURIComponent(key)}`, workspaceId, { method: "GET" })
-    if (!response.ok) return new Response("Media unavailable", { status: response.status })
-    const fallbackHeaders = new Headers(response.headers)
-    fallbackHeaders.delete("Access-Control-Allow-Origin")
-    fallbackHeaders.set("Cache-Control", "private, max-age=31536000, immutable")
-    applySafeMediaHeaders(fallbackHeaders)
-    return new Response(response.body, { status: 200, headers: fallbackHeaders })
-  }
-
-  const headers = new Headers()
-  object.writeHttpMetadata(headers)
-  headers.set("ETag", object.httpEtag)
+  const media = await readMedia(env.MEDIA_KV, key)
+  if (!media) return new Response("Media unavailable", { status: 404 })
+  const headers = new Headers({ "Content-Type": media.mime })
   headers.set("Cache-Control", "private, max-age=31536000, immutable")
   applySafeMediaHeaders(headers)
-  // onlyIf matched (client already has it): R2 returns metadata without a body.
-  if (!("body" in object)) return new Response(null, { status: 304, headers })
-  return new Response(object.body, { status: 200, headers })
+  return new Response(media.bytes, { status: 200, headers })
 }
