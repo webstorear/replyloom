@@ -61,12 +61,15 @@ export function QrConnectDialog({
     queryKey: ["session-status", sessionId],
     queryFn: () => getSessionStatus({ data: { sessionId } }),
     enabled: open && (step === "connecting" || isConnected),
+    // Realtime events remain the fast path, but QR pairing refs rotate
+    // frequently. Poll only while the user is actively linking a number so
+    // a dropped browser WebSocket cannot leave an expired QR on screen.
+    refetchInterval: open && step === "connecting" ? 3000 : false,
   })
 
-  // No polling: the session's WebSocket pushes a `session-status` event on
-  // every QR rotation, on connect and on disconnect -- each one triggers a
-  // single status read (which carries the fresh QR string). `socket-open`
-  // covers a QR that was issued before this session's socket came up.
+  // Realtime events are the fast path for QR rotation, connect and disconnect.
+  // A short polling fallback above is active only during pairing, because a
+  // dropped browser WebSocket must not leave an expired QR visible.
   useRealtimeEvent((event) => {
     if (!open || step !== "connecting") return
     if (event.sessionId !== sessionId) return
