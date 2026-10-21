@@ -45,7 +45,7 @@ Shared team inbox · multiple numbers · contacts & deal pipeline · safe broadc
 |---|---|
 | **What it is** | Self-hosted WhatsApp CRM and shared team inbox |
 | **License** | MIT (free for commercial use) |
-| **Hosting** | Your own Cloudflare account (Workers, Durable Objects, D1, R2, Queues, Vectorize) |
+| **Hosting** | Your own Cloudflare account (Workers, Durable Objects, D1, KV, Queues, Vectorize) |
 | **WhatsApp connection** | Linked device via QR code (WhatsApp Web protocol, through Baileys) |
 | **Numbers** | Several per workspace, each an isolated session |
 | **Team** | Workspaces, invitations, roles and permissions |
@@ -91,7 +91,7 @@ Shared team inbox · multiple numbers · contacts & deal pipeline · safe broadc
 |---|---|
 | CRM app (`apps/web`) | TanStack Start (React 19, Router, Query), Tailwind v4, shadcn/ui, Better Auth |
 | WhatsApp engine (`apps/worker`) | Cloudflare Workers + Durable Objects running Baileys (patched for Workers) |
-| Data | D1 (SQLite) via Drizzle ORM, R2 (media), KV (agent cache), Queues (broadcast dispatch), Vectorize + Workers AI (search & RAG) |
+| Data | D1 (SQLite) via Drizzle ORM, KV media storage (5 MiB per-file cap) and agent cache, Queues (broadcast dispatch), Vectorize + Workers AI (search & RAG) |
 | Tooling | pnpm workspaces, Turborepo, Vitest, TypeScript |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together.
@@ -105,7 +105,7 @@ git clone https://github.com/thareekanvar/replyloom.git && cd replyloom
 pnpm install
 pnpm exec wrangler login
 
-pnpm setup     # creates D1, R2, Queue, Vectorize, KV; applies migrations; generates secrets
+pnpm setup     # creates D1, Queue, Vectorize and dedicated KV namespaces; applies migrations; generates secrets
 ```
 
 Then, before the first deploy:
@@ -187,7 +187,7 @@ It can happen with any unofficial client, and nobody can guarantee otherwise. Re
 Yes. A workspace can link several numbers. Each runs in its own isolated Cloudflare Durable Object and stays connected 24/7, even with every browser tab closed.
 
 ### Do I need a server or a database?
-No. Everything runs on Cloudflare: Workers for the app, Durable Objects for the WhatsApp sessions, D1 (SQLite) for data and R2 for media. `pnpm setup` creates all of it.
+No. Everything runs on Cloudflare: Workers for the app, Durable Objects for WhatsApp sessions, D1 (SQLite) for relational data and a dedicated KV namespace for media. Media files are limited to 5 MiB each; KV is eventually consistent and its free-tier quotas are finite. `pnpm setup` configures the required resources.
 
 ### Does it work with WhatsApp groups?
 Yes. Group chats sit in the inbox next to direct chats, and you can create groups and manage members, settings and invite links.

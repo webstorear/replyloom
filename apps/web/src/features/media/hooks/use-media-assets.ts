@@ -73,7 +73,7 @@ export const getMediaAssetsPage = createServerFn()
   )
 
 // Called right after a successful POST /media/upload (see wa-api.ts) to
-// catalog the asset -- the worker owns R2, this just owns "what's in it,
+// catalog the asset -- the worker owns KV media bytes, this just owns "what's in it,
 // named, per workspace" so the gallery has something to list.
 export const createMediaAsset = createServerFn({ method: "POST" })
   .validator(
@@ -121,7 +121,7 @@ export const deleteMediaAsset = createServerFn({ method: "POST" })
       await requireWorkspaceAccess(asset.workspaceId)
       await db.delete(mediaAssets).where(eq(mediaAssets.id, data.id))
       // Best-effort -- a template still pointing at this key keeps working
-      // off R2's copy regardless (see ./templates.ts), this only removes
+      // off the KV copy regardless (see ./templates.ts), this only removes
       // it from the gallery's own storage.
       try {
         await callEngine(

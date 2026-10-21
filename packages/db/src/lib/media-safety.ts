@@ -1,5 +1,5 @@
 /**
- * Media served from R2 is attacker-controlled bytes (any WhatsApp contact can
+ * Media served from KV is attacker-controlled bytes (any WhatsApp contact can
  * send a "document" with mime text/html, and uploads come from the browser).
  * It's proxied on the app origin, so it must never be rendered as active
  * content there. Shared by the engine's GET /media and the web proxy.

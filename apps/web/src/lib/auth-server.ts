@@ -8,7 +8,7 @@ import * as schema from "@workspace/db/schema"
 import { escapeHtml } from "@/lib/html"
 import { sendEmail } from "@/lib/resend"
 
-// Single Better Auth instance for the Worker. D1/R2/etc bindings are static
+// Single Better Auth instance for the Worker. D1/KV/etc bindings are static
 // per Worker deployment (not per-request), so it's safe to build this once
 // at module scope — same pattern the rest of this app already uses for
 // `env` from "cloudflare:workers".
@@ -33,7 +33,7 @@ export const auth = betterAuth({
     // adapter would otherwise try to use.
     transaction: false,
   }),
-  secret: env.BETTER_AUTH_SECRET,
+  secret: (env as typeof env & { BETTER_AUTH_SECRET: string }).BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
   emailAndPassword: {
     enabled: true,

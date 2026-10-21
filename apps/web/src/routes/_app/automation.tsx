@@ -1,4 +1,4 @@
-import { createFileRoute, useRouteContext } from "@tanstack/react-router"
+import { createFileRoute, redirect, useRouteContext } from "@tanstack/react-router"
 import { useEffect, useState } from "react"
 import {
   useQuery,
@@ -57,6 +57,7 @@ import { shownOf, totalOf } from "@/lib/format-count"
 
 export const Route = createFileRoute("/_app/automation")({
   staticData: { title: "Automation" },
+  beforeLoad: () => { throw redirect({ to: "/inbox" }) },
   validateSearch: (
     search: Record<string, unknown>
   ): {

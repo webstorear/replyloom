@@ -80,6 +80,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@workspace/media-storage':
+        specifier: workspace:*
+        version: link:../../packages/media-storage
       '@workspace/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -180,6 +183,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@workspace/media-storage':
+        specifier: workspace:*
+        version: link:../../packages/media-storage
       pino:
         specifier: ^9.6.0
         version: 9.14.0
@@ -227,6 +233,15 @@ importers:
       eslint:
         specifier: ^9
         version: 9.39.4(jiti@2.7.0)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/media-storage:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260916.1
+        version: 5.20260917.1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

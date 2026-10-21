@@ -1,18 +1,14 @@
 import { createDb, and, eq, sql, applySafeMediaHeaders, isAllowedUploadMime, normalizeMime, waSessions, conversations, messages, broadcastCampaigns, contacts, agentConfigs, agentWebhookTools } from "@workspace/db";
-import {
-  startCampaign,
-  handleBroadcastBatch
-  
-} from "./broadcast";
+import { startCampaign } from "./broadcast";
 import type {BroadcastQueueMessage} from "./broadcast";
 import { storeLibraryMedia } from "./media";
+import { isWorkspaceMediaKey, readMedia, deleteMedia } from "@workspace/media-storage";
 import { indexMessagesForSearch, semanticSearch } from "./search";
-import { pruneWebhookDeliveries } from "./automation";
 import { handleAgentMessage } from "./ai-agent/agent";
 import { loadAgentConfig, invalidateConfigCache } from "./ai-agent/config";
 import { ingestDocument } from "./ai-agent/rag";
 import { listWorkspaceWebhookTools } from "./ai-agent/tools";
-import { resolveCaller, assertCallerWorkspace, unauthorized, forbidden, assertSafeOutboundUrl, MAX_MEDIA_UPLOAD_BYTES, MAX_SEND_MEDIA_BYTES  } from "./security";
+import { resolveCaller, assertCallerWorkspace, unauthorized, forbidden, assertSafeOutboundUrl, MAX_MEDIA_UPLOAD_BYTES } from "./security";
 import {
   SearchBodySchema,
   ReindexBodySchema,
@@ -27,6 +23,7 @@ import { publicMessage, publicStatus } from "./errors";
 import { readJson } from "./json";
 import * as Sentry from "@sentry/cloudflare";
 import { scrubSentryEvent } from "@workspace/db/sentry-scrub";
+import { consumeLocalRateLimit } from "./local-rate-limit";
 
 export { WhatsAppSession } from "./session/whatsapp-session";
 export { Scheduler } from "./scheduler";
@@ -62,14 +59,14 @@ export interface Env {
   WHATSAPP_SESSION: DurableObjectNamespace;
   SCHEDULER: DurableObjectNamespace;
   DB: D1Database;
-  MEDIA: R2Bucket;
+  MEDIA_KV: KVNamespace;
   BROADCAST_QUEUE: Queue<BroadcastQueueMessage>;
   AI: Ai;
   VECTORIZE: VectorizeIndex;
   AGENT_VECTORIZE: VectorizeIndex;
   REPLY_CACHE: KVNamespace;
-  API_RATE_LIMITER: RateLimit;
-  AUTH_RATE_LIMITER: RateLimit;
+  API_RATE_LIMITER?: RateLimit;
+  AUTH_RATE_LIMITER?: RateLimit;
   /**
    * Shared secret that proves a request came from apps/web (which holds the
    * same value as its ENGINE_INTERNAL_SECRET var and presents it on every
@@ -164,10 +161,15 @@ function configValuesFromBody(body: any): Partial<typeof agentConfigs.$inferInse
   return v;
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+export async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
   // ── Health check (only intentionally public endpoint) ──
+  // Manual-only mode: automation endpoints are deliberately unavailable.
+  if (/^\/(broadcast|search|agent)(\/|$)/.test(url.pathname) || url.pathname === "/schedule/arm") {
+    return Response.json({ ok: false, error: "Disabled in manual-only mode" }, { status: 404 });
+  }
+
   if (url.pathname === "/health") {
     return Response.json({ cloudflare: true, baileys: true });
   }
@@ -311,32 +313,37 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   // ── GET /media/:key (key may contain slashes) ──
-  // Streams a stored WhatsApp media object straight out of R2. Access is
-  // scoped to objects owned by the caller's workspace (keys embed the
-  // workspace id as their first segment, see src/media.ts).
+  // Auth-scoped media is read from the dedicated, bounded KV namespace.
   if (request.method === "GET" && url.pathname.startsWith("/media/")) {
-    const key = decodeURIComponent(url.pathname.slice("/media/".length));
+    let key: string;
+    try {
+      key = decodeURIComponent(url.pathname.slice("/media/".length));
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
     if (!key) return new Response("Not found", { status: 404 });
-    if (!key.startsWith(`${caller.workspaceId}/`)) return forbidden();
-    const object = await env.MEDIA.get(key);
-    if (!object) return new Response("Not found", { status: 404 });
-    const headers = new Headers();
-    object.writeHttpMetadata(headers);
-    // private: this is auth-scoped content -- browsers may cache it forever
-    // (keys are immutable), shared caches/CDNs must not.
+    if (!isWorkspaceMediaKey(caller.workspaceId, key)) return forbidden();
+    const media = await readMedia(env.MEDIA_KV, key);
+    if (!media) return new Response("Not found", { status: 404 });
+    const headers = new Headers({ "Content-Type": media.mime });
+    // KV is eventually consistent; immutable media keys are never overwritten.
     headers.set("Cache-Control", "private, max-age=31536000, immutable");
-    headers.set("ETag", object.httpEtag);
     applySafeMediaHeaders(headers);
-    return new Response(object.body, { headers });
+    return new Response(media.bytes, { headers });
   }
 
   // ── DELETE /media/:key -- remove a stored asset (gallery cleanup),
   // same workspace scoping as GET. ──
   if (request.method === "DELETE" && url.pathname.startsWith("/media/")) {
-    const key = decodeURIComponent(url.pathname.slice("/media/".length));
+    let key: string;
+    try {
+      key = decodeURIComponent(url.pathname.slice("/media/".length));
+    } catch {
+      return Response.json({ ok: false, error: "Invalid media key" }, { status: 400 });
+    }
     if (!key) return Response.json({ ok: false, error: "Missing key" }, { status: 400 });
-    if (!key.startsWith(`${caller.workspaceId}/`)) return forbidden();
-    await env.MEDIA.delete(key);
+    if (!isWorkspaceMediaKey(caller.workspaceId, key)) return forbidden();
+    await deleteMedia(env.MEDIA_KV, key);
     return Response.json({ ok: true });
   }
 
@@ -670,13 +677,6 @@ async function route(request: Request, env: Env): Promise<Response> {
         send_template: "POST /session/:id/send-template  { to, text?, mediaKey? }",
         send_media: "POST /session/:id/send-media  multipart: to, media (file)",
         upload_media: "POST /media/upload  multipart: workspaceId, file",
-        broadcast: "POST /broadcast/:campaignId/start",
-        search: "POST /search  { workspaceId, query, topK? }",
-        search_reindex: "POST /search/reindex  { workspaceId, limit? }",
-        agent_reply: "POST /agent/reply  { workspaceId, message, remoteJid?, phone?, conversationId? }",
-        agent_ingest: "POST /agent/ingest  { workspaceId, source, text, docId? }",
-        agent_config: "GET|PUT /agent/config  ?workspaceId= | { workspaceId, enabled, scopeDescription, ... }",
-        agent_tools: "GET|POST /agent/tools  ?workspaceId= | { workspaceId, name, description, url, parameters }",
       },
     });
   }
@@ -703,9 +703,14 @@ const worker = {
       url.pathname.includes("/signup");
 
     const rateLimiter = isAuthEndpoint ? env.AUTH_RATE_LIMITER : env.API_RATE_LIMITER;
-    const { success } = await rateLimiter.limit({ key: clientIp });
+    // Use Cloudflare's binding when configured; otherwise use a bounded,
+    // per-isolate fallback compatible with the Free plan. The fallback is
+    // best-effort only and counters reset when an isolate restarts.
+    const allowed = rateLimiter
+      ? (await rateLimiter.limit({ key: clientIp })).success
+      : consumeLocalRateLimit(`${isAuthEndpoint ? "auth" : "api"}:${clientIp}`, isAuthEndpoint ? 10 : 100, 60_000);
 
-    if (!success) {
+    if (!allowed) {
       return new Response(
         JSON.stringify({ ok: false, error: "Rate limit exceeded. Please try again later." }),
         {
@@ -742,38 +747,11 @@ const worker = {
     }
   },
 
-  // ── Queue consumer: one batch of staggered broadcast sends ──
-  async queue(batch: MessageBatch<BroadcastQueueMessage>, env: Env): Promise<void> {
-    try {
-      const db = createDb(env.DB);
-      await handleBroadcastBatch(batch, env, db);
-    } catch (err) {
-      // Rethrow after reporting so the queue's retry policy (max_retries: 2)
-      // still applies — Sentry gets the failure either way.
-      captureError(err, { module: "broadcast-queue" });
-      throw err;
-    }
-  },
-
-  // ── Cron trigger: recovery sweep for the Scheduler DO (see scheduler.ts).
-  // Individual sends / campaign kick-offs / webhook retries all run inside
-  // the Scheduler's alarm handler -- the cron never dispatches directly, so
-  // there's a single writer over the pending->sent transitions and no
-  // double-fire race with the agent alarm itself.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      pokeScheduler(env).catch((err) => captureError(err, { module: "scheduled" }))
-    );
     // Keep WhatsApp numbers online with no browser open: arm/run each
     // connected session's watchdog (see WhatsAppSession.runWatchdog).
     ctx.waitUntil(
       pokeSessionWatchdogs(env).catch((err) => captureError(err, { module: "session-watchdog" }))
-    );
-    // Retention: delivered/dead webhook deliveries (one row with the full
-    // payload per message per webhook) older than 7 days. Bounded batches;
-    // an index seek on (status, created_at) when there's nothing to do.
-    ctx.waitUntil(
-      pruneWebhookDeliveries(createDb(env.DB)).catch((err) => captureError(err, { module: "webhook-prune" }))
     );
   },
 };

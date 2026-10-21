@@ -37,25 +37,27 @@ pnpm config:backup --cloud    # local backup + upload to r2://<bucket>/config/co
 pnpm config:restore --cloud   # download from R2, then restore missing local files
 ```
 
-On a new machine: `pnpm exec wrangler login`, then `pnpm config:restore --cloud` — done, no re-entry. The bucket defaults to the media bucket created by `pnpm setup` (override with `CONFIG_R2_BUCKET`). The blob contains your `.dev.vars` secrets, so it lives in your private bucket — never commit it or share the bucket. Alternatively point `CONFIG_BACKUP_DIR` at a synced folder (Dropbox, iCloud) if you prefer local sync; the backup holds real secrets either way, so never move it into the repo.
+On a new machine: set `CONFIG_R2_BUCKET` to the name of a private R2 bucket that already exists, then run `pnpm exec wrangler login` and `pnpm config:restore --cloud`. Setup no longer creates an R2 bucket. The blob contains your `.dev.vars` secrets, so keep it private and never commit it or share the bucket. Alternatively point `CONFIG_BACKUP_DIR` at a synced folder (Dropbox, iCloud) if you prefer local sync; the backup holds real secrets either way, so never move it into the repo.
 
 **GitHub Actions deploy.** CI renders the three files with `node scripts/config.mjs --from-env`. Add these under Settings → Secrets and variables → Actions:
-- Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `KV_NAMESPACE_ID`
+- Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`, `KV_NAMESPACE_ID`, `MEDIA_KV_NAMESPACE_ID`
 - Variables: `APP_URL` (CRM origin), `ENGINE_URL` (engine Worker URL), `SENTRY_DSN` (optional)
 
-The deploy job skips cleanly when any of these is missing, for example on forks. The nightly D1 backup uses the same values.
+The deploy job skips cleanly when any required value is missing, for example on forks. The nightly D1 backup also needs these config values; add the optional `CONFIG_R2_BUCKET` secret pointing to an existing private R2 bucket if you want uploads enabled. Without it, the backup upload is skipped and no bucket is created.
 
 ## `pnpm setup`
 
 Runs `scripts/setup.sh`, which is idempotent (safe to re-run; it reuses anything that already exists):
 
 1. **D1 database** — creates `whatsapp-ai` if `apps/worker/wrangler.jsonc`'s `database_id` is still the placeholder, and writes the real id into both `apps/worker/wrangler.jsonc` and `apps/web/wrangler.jsonc` (they must point at the *same* database).
-2. **R2 bucket** — creates `whatsapp-ai-media` for message media.
+2. **Dedicated media KV namespace** — creates `MEDIA_KV` and writes the same namespace id into both Wrangler configs. Each stored media file is capped at 5 MiB; KV quotas are finite and may change. No R2 bucket is created for media.
 3. **Queue** — creates `wa-broadcast-dispatch`, used to stagger broadcast sends with randomized delays.
 4. **Vectorize indexes** — creates `wa-messages` (message search) and `wa-docs` (AI agent grounding), both 1024 dimensions, cosine similarity — matching the `@cf/baai/bge-m3` embedding model.
 5. **KV namespace** — creates `REPLY_CACHE` for the AI agent's exact-match answer cache + short-lived config cache, and writes its id into `apps/worker/wrangler.jsonc`.
 6. **D1 migrations** — applies everything in `packages/db/migrations` to the remote database.
 7. **Secrets** — generates `BETTER_AUTH_SECRET` (web), plus `WS_TOKEN_SECRET` and `ENGINE_INTERNAL_SECRET` (same value on both Workers), if they aren't already set.
+
+**Media storage note:** `MEDIA_KV` is separate from `REPLY_CACHE`; the app caps stored files at 5 MiB. KV is eventually consistent and has finite quotas, so it is not a durable object-store replacement. Existing objects in any previous R2 bucket are not migrated automatically; plan and verify a migration before switching a live deployment. This implementation does not create or delete R2 buckets.
 
 After it finishes, set your real URLs: `BETTER_AUTH_URL` in `apps/web/wrangler.jsonc` (Better Auth uses it for cookies and redirects), `CORS_ORIGIN` in `apps/worker/wrangler.jsonc`, and `VITE_ENGINE_URL` in `apps/web/wrangler.jsonc` and `apps/web/.env.production`.
 
@@ -77,7 +79,7 @@ If you'd rather not run the scripts (e.g. wiring this into your own CI):
 ```bash
 # From apps/worker/
 wrangler d1 create whatsapp-ai                          # copy the database_id into both wrangler.jsonc files
-wrangler r2 bucket create whatsapp-ai-media
+wrangler kv namespace create MEDIA_KV                 # copy the same id into both Wrangler configs
 wrangler queues create wa-broadcast-dispatch
 wrangler vectorize create wa-messages --dimensions=1024 --metric=cosine
 wrangler vectorize create wa-docs --dimensions=1024 --metric=cosine
@@ -95,7 +97,7 @@ pnpm build
 
 ## Multiple environments
 
-For staging/production separation, use Wrangler's `env` blocks in both `wrangler.jsonc` files (separate D1 databases, R2 buckets, etc. per environment) and pass `--env <name>` to every command above. Not set up by default here to keep the template simple — add it if you need it.
+For staging/production separation, use Wrangler's `env` blocks in both `wrangler.jsonc` files (separate D1 databases and dedicated KV namespaces per environment) and pass `--env <name>` to every command above. Not set up by default here to keep the template simple — add it if you need it.
 
 ### Example: staging + production
 
@@ -113,11 +115,9 @@ Add env blocks to both `apps/worker/wrangler.jsonc` and `apps/web/wrangler.jsonc
       "d1_databases": [
         { "binding": "DB", "database_name": "whatsapp-ai-staging", "database_id": "<staging-db-id>" }
       ],
-      "r2_buckets": [
-        { "binding": "MEDIA", "bucket_name": "whatsapp-ai-media-staging" }
-      ],
       "kv_namespaces": [
-        { "binding": "REPLY_CACHE", "id": "<staging-kv-id>" }
+        { "binding": "REPLY_CACHE", "id": "<staging-kv-id>" },
+        { "binding": "MEDIA_KV", "id": "<staging-media-kv-id>" }
       ]
     },
     "production": {
@@ -126,11 +126,9 @@ Add env blocks to both `apps/worker/wrangler.jsonc` and `apps/web/wrangler.jsonc
       "d1_databases": [
         { "binding": "DB", "database_name": "whatsapp-ai-production", "database_id": "<production-db-id>" }
       ],
-      "r2_buckets": [
-        { "binding": "MEDIA", "bucket_name": "whatsapp-ai-media-production" }
-      ],
       "kv_namespaces": [
-        { "binding": "REPLY_CACHE", "id": "<production-kv-id>" }
+        { "binding": "REPLY_CACHE", "id": "<production-kv-id>" },
+        { "binding": "MEDIA_KV", "id": "<production-media-kv-id>" }
       ]
     }
   }
@@ -218,8 +216,8 @@ D1 does not have automatic backups on the free tier. For production:
 # Export the entire database to a SQL file
 wrangler d1 export whatsapp-ai --remote --output backups/d1-$(date +%Y%m%d).sql
 
-# Or back up to R2 for durable storage
-wrangler d1 export whatsapp-ai --remote --output r2://whatsapp-ai-media/backups/d1-$(date +%Y%m%d).sql
+# Optional: upload that SQL file to an existing private R2 bucket (set CONFIG_R2_BUCKET first)
+wrangler r2 object put "$CONFIG_R2_BUCKET/backups/d1-$(date +%Y%m%d).sql" --file "backups/d1-$(date +%Y%m%d).sql"
 ```
 
 **Automated backup (recommended):**

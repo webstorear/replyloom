@@ -101,7 +101,7 @@ export const messages = sqliteTable(
       .notNull()
       .default("text"),
     body: text("body"),
-    mediaKey: text("media_key"), // R2 object key — never store blobs in D1
+    mediaKey: text("media_key"), // KV media key — never store blobs in D1
     mediaMime: text("media_mime"),
     // Per-type extras (dimensions, duration, filename, voice-note flag) --
     // a concrete interface rather than Record<string, unknown> so this

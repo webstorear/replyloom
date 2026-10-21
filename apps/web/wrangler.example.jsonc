@@ -29,8 +29,9 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "whatsapp-ai", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "../../packages/db/migrations", "remote": true }
   ],
-  "r2_buckets": [
-    { "binding": "MEDIA", "bucket_name": "whatsapp-ai-media" }
+  // Shared with apps/worker; use a dedicated namespace, never REPLY_CACHE.
+  "kv_namespaces": [
+    { "binding": "MEDIA_KV", "id": "REPLACE_WITH_MEDIA_KV_NAMESPACE_ID" }
   ],
   "vars": {
     // Public base URL Better Auth uses for cookies/redirects. BETTER_AUTH_SECRET
@@ -55,29 +56,4 @@
     // `wrangler secret put RESEND_API_KEY`. Invites still get created
     // without it, the email is just skipped (logged server-side).
   },
-  // Rate limiting for the web app Worker (CRM), enforced in src/server.ts
-  // per client IP (Cloudflare's limiter is per-location, eventually
-  // consistent -- a brake on abuse, not an exact quota).
-  //  - WEB_RATE_LIMITER: all server-function + /api traffic. Generous: a
-  //    single inbox load fans out to ~10-20 calls and offices share NAT IPs.
-  //  - AUTH_RATE_LIMITER: sign-in / sign-up / password-reset POSTs only
-  //    (credential stuffing + email-bombing brake).
-  "ratelimits": [
-    {
-      "name": "WEB_RATE_LIMITER",
-      "namespace_id": "2001",
-      "simple": {
-        "limit": 600,
-        "period": 60
-      }
-    },
-    {
-      "name": "AUTH_RATE_LIMITER",
-      "namespace_id": "2002",
-      "simple": {
-        "limit": 10,
-        "period": 60
-      }
-    }
-  ]
 }

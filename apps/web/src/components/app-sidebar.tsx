@@ -14,10 +14,7 @@ import {
 import {
   InboxIcon,
   UsersIcon,
-  KanbanSquareIcon,
   SmartphoneIcon,
-  MegaphoneIcon,
-  SparklesIcon,
   Settings2Icon,
   CircleHelpIcon,
 } from "lucide-react"
@@ -27,9 +24,6 @@ const data = {
   navMain: [
     { title: "Inbox", url: "/inbox", icon: <InboxIcon /> },
     { title: "Contacts", url: "/contacts", icon: <UsersIcon /> },
-    { title: "Pipeline", url: "/pipeline", icon: <KanbanSquareIcon /> },
-    { title: "Broadcasts", url: "/broadcasts", icon: <MegaphoneIcon /> },
-    { title: "Automation", url: "/automation", icon: <SparklesIcon /> },
     { title: "Integrations", url: "/integrations", icon: <SmartphoneIcon /> },
   ],
   navSecondary: [

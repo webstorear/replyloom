@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router"
-import { MessageCircleIcon, ZapIcon, UsersIcon } from "lucide-react"
+import { MessageCircleIcon, UsersIcon } from "lucide-react"
 
 export const Route = createFileRoute("/_auth")({
   component: AuthLayout,
@@ -50,30 +50,29 @@ function AuthLayout() {
           />
           <div className="relative flex flex-col gap-6">
             <h2 className="text-3xl leading-tight font-semibold text-balance">
-              One inbox for every WhatsApp conversation your business has.
+              All your WhatsApp Business conversations in one place.
             </h2>
             <p className="max-w-sm text-sm text-primary-foreground/80">
-              Multi-session messaging, contacts, pipeline and broadcasts —
-              unified, searchable and automated.
+              Connect your WhatsApp account, review conversations and reply manually from one shared inbox.
             </p>
             <div className="flex flex-col gap-3 pt-2">
               <div className="flex items-center gap-3 text-sm text-primary-foreground/90">
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary-foreground/15">
                   <MessageCircleIcon className="size-4" />
                 </span>
-                Unified inbox across every connected number
+                Review conversations in one inbox
               </div>
               <div className="flex items-center gap-3 text-sm text-primary-foreground/90">
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary-foreground/15">
                   <UsersIcon className="size-4" />
                 </span>
-                Contacts, pipeline and lifecycle stages built in
+                Find conversations and keep context at hand
               </div>
               <div className="flex items-center gap-3 text-sm text-primary-foreground/90">
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary-foreground/15">
-                  <ZapIcon className="size-4" />
+                  <MessageCircleIcon className="size-4" />
                 </span>
-                Auto-replies, broadcasts and webhooks on autopilot
+                You stay in control: no automatic replies or campaigns
               </div>
             </div>
           </div>
